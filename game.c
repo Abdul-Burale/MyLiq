@@ -1,10 +1,21 @@
 #include <windows.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
 
 #define Locale_var static 
 #define Global_var static 
 
+// Integer Sizes defined
+typedef int8_t  int8;
+typedef int16_t int16;
+typedef int32_t int32;
+typedef int64_t int64;
+
+typedef uint8_t  uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+typedef uint64_t uint64;
 
 typedef struct Win32_OffScreen_Buffer {
         BITMAPINFO Info;
@@ -48,13 +59,13 @@ static void RenderGradient(Win32_OffScreen_Buffer Buffer,int XOffset, int YOffse
            for (int X = 0;
               X < Buffer.Width; X++)
             {
-                    int Blue = (X + XOffset);
-                    int Green = (Y + YOffset);
+                    uint8_t Blue = (X + XOffset);
+                    uint8_t Green = (Y + YOffset);
 
 
                     *Pixel++ = ((Green << 8)  | Blue);
             }
-          Row += Buffer.Pitch;
+            Row += Buffer.Pitch;
         }
 }
 static void Win32ResizeDIBSection(Win32_OffScreen_Buffer *Buffer, int Width, int Height)
@@ -78,11 +89,11 @@ static void Win32ResizeDIBSection(Win32_OffScreen_Buffer *Buffer, int Width, int
 
     int BitmapMemorySize = (Buffer->Width*Buffer->Height) * Buffer->BytesPerPixel;                                            
     Buffer->Memory = VirtualAlloc(0, BitmapMemorySize, MEM_COMMIT, PAGE_READWRITE);
-    Buffer->Pitch = Width*Buffer->BytesPerPixel;
+    Buffer->Pitch = Buffer->Width*Buffer->BytesPerPixel;
 }
 
 
-static void Win32DisplayBuffer(HDC DeviceContext, int WindowWidth, int WindowHeight, Win32_OffScreen_Buffer Buffer, int Width, int Height)
+static void Win32DisplayBuffer(HDC DeviceContext, int WindowWidth, int WindowHeight, Win32_OffScreen_Buffer Buffer)
 {
 
     StretchDIBits(DeviceContext, 0, 0, WindowWidth, WindowHeight,
@@ -92,6 +103,23 @@ static void Win32DisplayBuffer(HDC DeviceContext, int WindowWidth, int WindowHei
                                  DIB_RGB_COLORS,
                                  SRCCOPY);
 }
+
+static void CheckMessage()
+{
+    MSG Message;
+
+    while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
+    {
+        if(Message.message == WM_QUIT)
+        {
+            Running = false;
+        }
+
+        TranslateMessage(&Message);
+        DispatchMessageA(&Message);
+    }
+}
+
 // Main Window Callback
 LRESULT CALLBACK MainWindowCallBack(HWND Window,
                                     UINT Message,
@@ -101,10 +129,6 @@ LRESULT CALLBACK MainWindowCallBack(HWND Window,
     LRESULT Result = 0;
     switch(Message)
     {
-
-        case WM_SIZE:
-        {
-        } break;
 
         case WM_DESTROY:
         {
@@ -124,7 +148,7 @@ LRESULT CALLBACK MainWindowCallBack(HWND Window,
         case WM_PAINT:
         {
             PAINTSTRUCT Paint;
-            Win32_Window_Dimension Dimension;
+            Win32_Window_Dimension Dimension = Win32_GetWindowDimension(Window);
             HDC DeviceContext =  BeginPaint(Window, &Paint);
             
             int X = Paint.rcPaint.left;
@@ -132,7 +156,7 @@ LRESULT CALLBACK MainWindowCallBack(HWND Window,
             int Width = Paint.rcPaint.right - Paint.rcPaint.left;
             int Height = Paint.rcPaint.bottom - Paint.rcPaint.top;
 
-            Win32DisplayBuffer(DeviceContext, Dimension.Width, Dimension.Height, GlobalBackBuffer, Width, Height);
+            Win32DisplayBuffer(DeviceContext, Dimension.Width, Dimension.Height, GlobalBackBuffer);
             EndPaint(Window, &Paint);
         } break;
 
@@ -151,15 +175,19 @@ int CALLBACK WinMain(HINSTANCE Instance, //  hInstance is the handle to an insta
                      LPSTR CmdLine, // Command line arguments as unicode
                      int ShowCode) // Flag to indicate if window is minimized, maxed or shown normal
 {
+    LARGE_INTEGER PCFRESULT; // PerformanceCounterFrequency Result
+    QueryPerformanceFrequency(&PCFRESULT);
+    int64_t PerformanceCounterFreq = PCFRESULT.QuadPart;
+
     WNDCLASS WindowClass = {0};
 
     Win32ResizeDIBSection(&GlobalBackBuffer, 1280, 720);
-
     
     WindowClass.style = CS_VREDRAW | CS_HREDRAW ; // Set of binary flags, basically a bitfield
     WindowClass.lpfnWndProc = MainWindowCallBack; // Pointer to a function that defines how our window responds to events
     WindowClass.hInstance = Instance; // Window instance 
     WindowClass.lpszClassName = "MyLiqClass"; // Window Class Name 
+
 
     if(RegisterClass(&WindowClass)) // Register class so that it can create a window for us,
     {
@@ -180,36 +208,53 @@ int CALLBACK WinMain(HINSTANCE Instance, //  hInstance is the handle to an insta
             if(Window) // Message que/loop, pull messages off the que
             {
                 Running = true;
-                
+                HDC DeviceContext = GetDC(Window);
+               
 
                 int Xoffset = 0;
                 int Yoffset = 0;
+
+                // Performance counter(Time Stamp)
+                LARGE_INTEGER LastCounter;
+                QueryPerformanceCounter(&LastCounter);
+
+                int64_t LastCycloneCount = __rdtsc();
+
+
                 while(Running)
                 {
-                    MSG Message;
-                    while(PeekMessage(&Message, 0,  0, 0,  PM_REMOVE))
-                    {
-                        if(Message.message == WM_QUIT)
-                        {
-                            Running = false;
-                        }
-                        TranslateMessage(&Message);
-                        DispatchMessage(&Message);
-                    
-                    }
 
-                    
-
-                    HDC DeviceContext = GetDC(Window);
-                    Win32_Window_Dimension Dimension = Win32_GetWindowDimension(Window);
-
+                    CheckMessage();
                     RenderGradient(GlobalBackBuffer, Xoffset, Yoffset);
-                    Win32DisplayBuffer(DeviceContext, Dimension.Width, Dimension.Height, GlobalBackBuffer, Dimension.Width, Dimension.Height);
-                    ReleaseDC(Window, DeviceContext);
+
+                    Win32_Window_Dimension Dimension = Win32_GetWindowDimension(Window);
+                    Win32DisplayBuffer(DeviceContext, Dimension.Width, Dimension.Height, GlobalBackBuffer);
                     ++Xoffset;
+
+                    LARGE_INTEGER EndCounter;
+                    QueryPerformanceCounter(&EndCounter);
+
+                    int64_t EndCycleCount = __rdtsc();
+                    int64_t CyclesElapsed = EndCycleCount - LastCycloneCount;
+                    int32_t MCPF = (int32_t)(CyclesElapsed / (1000 * 1000)); //Millions Cycles per Secondfs
+
+                    int64_t CounterElapsed = EndCounter.QuadPart - LastCounter.QuadPart; // Time Elapsed in Machine readable clock time
+                    int32_t MsPerFrame = (int32_t)(((1000*CounterElapsed) / PerformanceCounterFreq));
+                    int32_t FPS = PerformanceCounterFreq / CounterElapsed;
+
+
+                    char Buffer[256];
+                    sprintf(Buffer, "Mili-Seconds Per Frame: %dms/f Fps: %d/s MC: %dmc/f \n", MsPerFrame, FPS, MCPF);
+                    OutputDebugStringA(Buffer);
+                    
+                    printf("Ms: %dms/f\t Fps: %d/s\t MC: %dmc/f \n", MsPerFrame, FPS, MCPF);
+
+                    LastCounter = EndCounter;
+                    LastCycloneCount = EndCycleCount;
                 }
             }
     }
     return(0);
 }
+
 
